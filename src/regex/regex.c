@@ -36,6 +36,7 @@ struct regex_inner {
     struct NFA *start;
     struct NFA **nodes;
     size_t node_count;
+    char *pattern;
 };
 
 static struct NFA *make_node(struct regex_inner *inner, RegexErr *err) {
@@ -129,6 +130,11 @@ static RegexErr add_star(struct regex_inner *inner, struct Fragment *frag, Regex
 Regex *recompile(char *input, size_t len, RegexErr *err) {
     struct regex_inner *inner = calloc(1, sizeof(struct regex_inner));
     if (!inner) {
+        return NULL;
+    }
+    inner->pattern = strdup(input);
+    if (!inner->pattern) {
+        refree((Regex *) inner);
         return NULL;
     }
     struct NFA *const root = make_node(inner, err);
@@ -322,6 +328,7 @@ void refree(Regex *re) {
     for (size_t i = 0; i < inner->node_count; i++) {
         free(inner->nodes[i]);
     }
+    free(inner->pattern);
     free(inner->nodes);
     free(inner);
 }
