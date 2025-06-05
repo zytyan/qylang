@@ -8,6 +8,7 @@
 #include <memory.h>
 #include <ctype.h>
 #include <string.h>
+#include <stdarg.h>
 #include "regex.h"
 
 #define ARR_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
@@ -16,7 +17,15 @@ struct NFA {
     struct NFA **epsilon;
     size_t epsilon_count;
     bool accepted;
+    char name[15];
 };
+
+void nfa_set_name(struct NFA *nfa, char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(nfa->name, sizeof(nfa->name), format, args);
+    va_end(args);
+}
 
 struct Fragment {
     struct NFA *start;  // 入口状态
@@ -44,6 +53,7 @@ static struct NFA *make_node(struct regex_inner *inner, RegexErr *err) {
     inner->nodes = ptr;
     inner->nodes[inner->node_count] = nfa;
     inner->node_count++;
+    nfa_set_name(nfa, "n%zu", inner->node_count);
     return nfa;
 }
 
@@ -127,6 +137,14 @@ Regex *recompile(char *input, size_t len, RegexErr *err) {
         refree((Regex *) inner);
         return NULL;
     }
+    struct NFA *const root_end = make_node(inner, err);
+    if (!root_end) {
+        refree((Regex *) inner);
+        return NULL;
+    }
+    nfa_set_name(root, "Start");
+    nfa_set_name(root_end, "End");
+    root_end->accepted = true;
     struct Fragment *stack = (struct Fragment *) calloc(len, sizeof(struct Fragment));
     if (!stack) {
         refree((Regex *) inner);
@@ -135,7 +153,7 @@ Regex *recompile(char *input, size_t len, RegexErr *err) {
     size_t top = 2;
     // stack[0] 是 dummy root
     stack[0].start = root;
-    stack[0].end = root;
+    stack[0].end = root_end;
     struct NFA *start_node = make_node(inner, err);
     if (!start_node) {
         refree((Regex *) inner);
@@ -148,49 +166,85 @@ Regex *recompile(char *input, size_t len, RegexErr *err) {
         return NULL;
     }
     // stack[1] 是当前构建中的 fragment
+    int group = 0;
+    int sub_string = 0;
     stack[1].start = start_node;
     stack[1].end = start_node;
-
+    nfa_set_name(start_node, "G[%d]{%d}", group, sub_string);
     char *p = input;
     size_t idx = 0;
     for (; *p && idx < len; p++, idx++) {
         if (*p == '(') {
-            struct NFA *node = make_node(inner, err);
-            if (!node) {
+            struct NFA *start_node = make_node(inner, err);
+            if (!start_node) {
                 refree((Regex *) inner);
                 free(stack);
                 return NULL;
             }
-            if (add_epsilon(stack[top - 1].end, node, err) != REGEX_OK) {
+            struct NFA *end_node = make_node(inner, err);
+            if (!end_node) {
+                refree((Regex *) inner);
+                free(stack);
+                free(start_node);
+                return NULL;
+            }
+            if (add_epsilon(stack[top - 1].end, start_node, err) != REGEX_OK) {
+                refree((Regex *) inner);
+                free(stack);
+                free(start_node);
+                free(end_node);
+                return NULL;
+            }
+            group++;
+            nfa_set_name(start_node, "G[%d]", group);
+            nfa_set_name(end_node, "G[%d]End", group);
+            struct NFA *first_node = make_node(inner, err);
+            if (!first_node) {
+                refree((Regex *) inner);
+                free(stack);
+                return NULL;
+            }
+            sub_string++;
+            nfa_set_name(first_node, "G[%d]{%d}", group, sub_string);
+            if (add_epsilon(start_node, first_node, err) != REGEX_OK) {
                 refree((Regex *) inner);
                 free(stack);
                 return NULL;
             }
             top++;
-            stack[top - 1].start = node;
-            stack[top - 1].end = node;
-            // FIXME: 左括号的逻辑也不完善，应该多加几个epsilon转换的
+            stack[top - 1].start = start_node;
+            stack[top - 1].end = first_node;
+            stack[top - 2].start = start_node;
+            stack[top - 2].end = end_node;
         } else if (*p == ')') {
-            //FIXME: 括号的逻辑还不完善，可能还涉及到管道符的逻辑修改
-            stack[top - 1].end;
+            if (add_epsilon(stack[top - 1].end, stack[top - 2].end, err) != REGEX_OK) {
+                refree((Regex *) inner);
+                free(stack);
+                return NULL;
+            }
             top--;
         } else if (*p == '|') {
-            if (top == 2) {
-                // 如果 | 没有括号，那就认为是接收状态
-                stack[top - 1].end->accepted = true;
+            // 对于 | 的场景，直接处理掉
+            if (add_epsilon(stack[top - 1].end, stack[top - 2].end, err) != REGEX_OK) {
+                refree((Regex *) inner);
+                free(stack);
+                return NULL;
             }
+
             struct NFA *node = make_node(inner, err);
             if (!node) {
                 refree((Regex *) inner);
                 free(stack);
                 return NULL;
             }
-            if (add_epsilon(stack[top - 2].end, node, err) != REGEX_OK) {
+            sub_string++;
+            nfa_set_name(node, "G[%d]{%d}", group, sub_string);
+            if (add_epsilon(stack[top - 2].start, node, err) != REGEX_OK) {
                 refree((Regex *) inner);
                 free(stack);
                 return NULL;
             }
-            stack[top - 1].start = stack[top - 2].end;
+            stack[top - 1].start = node;
             stack[top - 1].end = node;
         } else if (*p == '[') {
             p++;
@@ -247,7 +301,11 @@ Regex *recompile(char *input, size_t len, RegexErr *err) {
             }
         }
     }
-    stack[top - 1].end->accepted = true;
+    if (add_epsilon(stack[top - 1].end, stack[top - 2].end, err) != REGEX_OK) {
+        refree((Regex *) inner);
+        free(stack);
+        return NULL;
+    }
     free(stack);
     if (top != 2) {
         refree((Regex *) inner);
@@ -255,7 +313,6 @@ Regex *recompile(char *input, size_t len, RegexErr *err) {
     }
     return (Regex *) inner;
 }
-
 
 void refree(Regex *re) {
     if (!re) {
@@ -274,7 +331,8 @@ void refree(Regex *re) {
 static void add_state(struct NFA **states, size_t *count, struct NFA *state, struct NFA **visited, size_t *vcount) {
     // 去重
     for (size_t i = 0; i < *vcount; i++) {
-        if (visited[i] == state) return;
+        if (visited[i] == state)
+            return;
     }
     visited[(*vcount)++] = state;
 
@@ -322,54 +380,54 @@ bool rematch(Regex *re, char *const string, RegexErr *err) {
 
     // 检查是否有接受状态
     for (size_t i = 0; i < current_count; i++) {
-        if (current[i]->accepted) return true;
+        if (current[i]->accepted)
+            return true;
     }
 
     return false;
 }
 
-static void write_ranges(FILE *out, const bool *marks) {
-    int i = 0;
+static void write_char(FILE *out, int ch) {
+    if (ch == '"' || ch == '\\') {
+        fprintf(out, "\\%c", ch);
+    } else if (isprint(ch)) {
+        fputc(ch, out);
+    } else {
+        fprintf(out, "\\x%02X", ch);
+    }
+}
+
+static void write_ranges(FILE *out, const bool *used) {
     bool first = true;
-    while (i < 256) {
-        if (!marks[i]) {
+    for (int i = 0; i < 256;) {
+        if (!used[i]) {
             i++;
             continue;
         }
 
         int start = i;
-        while (i + 1 < 256 && marks[i + 1]) {
+        while (i + 1 < 256 && used[i + 1]) {
             i++;
         }
         int end = i;
 
-        if (!first) fprintf(out, ", ");
-        if (start == end) {
-            if (isprint(start)) {
-                fprintf(out, "%c", start);
-            } else {
-                fprintf(out, "0x%02X", start);
-            }
-        } else {
-            if (isprint(start)) {
-                fprintf(out, "%c-", start);
-            } else {
-                fprintf(out, "0x%02X-", start);
-            }
-            if (isprint(end)) {
-                fprintf(out, "%c", end);
-            } else {
-                fprintf(out, "0x%02X", end);
-            }
+        if (!first)
+            fprintf(out, ", ");
+
+        write_char(out, start);
+        if (start != end) {
+            fputc('-', out);
+            write_char(out, end);
         }
 
-        i++;
         first = false;
+        i++;
     }
 }
 
 void dump_dot(Regex *re, FILE *out) {
-    if (!re || !out) return;
+    if (!re || !out)
+        return;
     struct regex_inner *inner = (struct regex_inner *) re;
 
     fprintf(out, "digraph NFA {\n");
@@ -378,10 +436,11 @@ void dump_dot(Regex *re, FILE *out) {
     // 输出节点定义
     for (size_t i = 0; i < inner->node_count; i++) {
         struct NFA *nfa = inner->nodes[i];
-        fprintf(out, "  node%p [shape=%s label=\"%p\"];\n",
+        fprintf(out,
+                "  node%p [shape=%s label=\"%s\"];\n",
                 (void *) nfa,
                 nfa->accepted ? "doublecircle" : "circle",
-                (void *) nfa);
+                nfa->name);
     }
 
     // 输出边
@@ -392,7 +451,8 @@ void dump_dot(Regex *re, FILE *out) {
         bool emitted[256] = {0};
 
         for (int ch = 0; ch < 256; ch++) {
-            if (!nfa->next[ch] || emitted[ch]) continue;
+            if (!nfa->next[ch] || emitted[ch])
+                continue;
 
             struct NFA *dst = nfa->next[ch];
             bool used[256] = {0};
@@ -412,27 +472,34 @@ void dump_dot(Regex *re, FILE *out) {
 
         // ε 转移
         for (size_t j = 0; j < nfa->epsilon_count; j++) {
-            fprintf(out, "  node%p -> node%p [label=\"ε\"];\n",
-                    (void *) nfa, (void *) nfa->epsilon[j]);
+            fprintf(out,
+                    "  node%p -> node%p [label=\"ε\", style=dashed, color=red];\n",
+                    (void *) nfa,
+                    (void *) nfa->epsilon[j]);
         }
     }
 
     fprintf(out, "}\n");
 }
 
+#define REC(s, e) recompile((s), strlen(s), (e));
+
 int main() {
     RegexErr err = REGEX_OK;
-    Regex *re = recompile("ab|cd", strlen("ab|cd"), &err);
+    Regex *re = REC("ab(cd+|a[bd])*|xyz", &err);
     if (!re) {
         return 0;
     }
-    printf("%d\n", rematch(re, "ab", &err));  // 1
-    printf("%d\n", rematch(re, "abc", &err));  // 0
-    printf("%d\n", rematch(re, "abd", &err));  // 0
-    printf("%d\n", rematch(re, "abe", &err));  // 0
-    printf("%d\n", rematch(re, "abcccc", &err));   // 0
-    printf("%d\n", rematch(re, "abc", &err));   // 0
-    printf("%d\n", rematch(re, "cd", &err)); // 1
+    printf("%d\n", rematch(re, "abab", &err));      // 1
+    printf("%d\n", rematch(re, "abad", &err));      // 1
+    printf("%d\n", rematch(re, "ababad", &err));    // 1
+    printf("%d\n", rematch(re, "abadcd", &err));    // 1
+    printf("%d\n", rematch(re, "ababdabd", &err));  // 0
+    printf("%d\n", rematch(re, "ab", &err));        // 1
+    printf("%d\n", rematch(re, "abcccc", &err));    // 0
+    printf("%d\n", rematch(re, "abc", &err));       // 0
+    printf("%d\n", rematch(re, "cd", &err));        // 0
+    printf("%d\n", rematch(re, "xyz", &err));       // 1
     FILE *fp = fopen("test.dot", "w");
     if (!fp) {
         perror("open test.dot failed");
