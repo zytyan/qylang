@@ -10,66 +10,6 @@
 #include "regex.h"
 #include "recompile.h"
 
-#define MAX_STATES 1024  // 可根据需求调整
-
-static void add_state(struct NFA **states, size_t *count, struct NFA *state, struct NFA **visited, size_t *vcount) {
-    // 去重
-    for (size_t i = 0; i < *vcount; i++) {
-        if (visited[i] == state)
-            return;
-    }
-    visited[(*vcount)++] = state;
-
-    // 加入状态集
-    states[(*count)++] = state;
-
-    // 展开 ε 转移
-    for (size_t i = 0; i < state->epsilon_count; i++) {
-        add_state(states, count, state->epsilon[i], visited, vcount);
-    }
-}
-
-bool rematch(Regex *re, char *const string, RegexErr *err) {
-    if (!re) {
-        return false;
-    }
-    struct RegexInner *inner = (struct RegexInner *) re;
-
-    struct NFA *current[MAX_STATES];
-    struct NFA *next[MAX_STATES];
-    struct NFA *visited[MAX_STATES];
-
-    size_t current_count = 0;
-    size_t next_count = 0;
-    size_t visited_count = 0;
-
-    // 初始状态闭包
-    add_state(current, &current_count, inner->start, visited, &visited_count);
-
-    for (char *p = string; *p; p++) {
-        next_count = 0;
-        visited_count = 0;
-
-        for (size_t i = 0; i < current_count; i++) {
-            struct NFA *s = current[i];
-            struct NFA *dst = s->next[(unsigned char) *p];
-            if (dst) {
-                add_state(next, &next_count, dst, visited, &visited_count);
-            }
-        }
-
-        memcpy(current, next, sizeof(struct NFA *) * next_count);
-        current_count = next_count;
-    }
-
-    // 检查是否有接受状态
-    for (size_t i = 0; i < current_count; i++) {
-        if (current[i]->accepted)
-            return true;
-    }
-
-    return false;
-}
 
 static void write_char(FILE *out, int ch) {
     if (ch == '"' || ch == '\\') {
@@ -170,20 +110,20 @@ void dump_dot(Regex *re, FILE *out) {
 
 int main() {
     RegexErr err = REGEX_OK;
-    Regex *re = REC("(ab|cd|ef|gh|dot(py|exe|dll)end)m(de|ps|ls)", &err);
+    Regex *re = REC("ab(a[bd]*|cd)?|xqwyz", &err);
     if (!re) {
         return 0;
     }
-    printf("%d\n", rematch(re, "abab", &err));      // 1
-    printf("%d\n", rematch(re, "abad", &err));      // 1
-    printf("%d\n", rematch(re, "ababad", &err));    // 1
-    printf("%d\n", rematch(re, "abadcd", &err));    // 1
-    printf("%d\n", rematch(re, "ababdabd", &err));  // 0
-    printf("%d\n", rematch(re, "ab", &err));        // 1
-    printf("%d\n", rematch(re, "abcccc", &err));    // 0
-    printf("%d\n", rematch(re, "abc", &err));       // 0
-    printf("%d\n", rematch(re, "cd", &err));        // 0
-    printf("%d\n", rematch(re, "xqwyz", &err));       // 1
+    printf("%d\n", refullmatch(re, "abab", &err));      // 1
+    printf("%d\n", refullmatch(re, "abad", &err));      // 1
+    printf("%d\n", refullmatch(re, "ababad", &err));    // 0
+    printf("%d\n", refullmatch(re, "abadcd", &err));    // 0
+    printf("%d\n", refullmatch(re, "ababdabd", &err));  // 0
+    printf("%d\n", refullmatch(re, "ab", &err));        // 1
+    printf("%d\n", refullmatch(re, "abcccc", &err));    // 0
+    printf("%d\n", refullmatch(re, "abc", &err));       // 0
+    printf("%d\n", refullmatch(re, "cd", &err));        // 0
+    printf("%d\n", refullmatch(re, "xqwyz", &err));       // 1
     FILE *fp = fopen("test.dot", "w");
     if (!fp) {
         perror("open test.dot failed");
