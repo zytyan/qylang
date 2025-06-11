@@ -49,6 +49,16 @@ static void write_ranges(FILE *out, const bool *used) {
     }
 }
 
+void fprint_str_escaped(FILE *fp, const char *data, const size_t len) {
+    size_t pos = 0;
+    for (const char *p = data; *p && pos < len; ++p, ++pos) {
+        if (*p == '"') {
+            fputc('\\', fp);
+        }
+        fputc(*p, fp);
+    }
+}
+
 void dump_dot(Regex *re, FILE *out) {
     if (!re || !out)
         return;
@@ -56,7 +66,10 @@ void dump_dot(Regex *re, FILE *out) {
 
     fprintf(out, "digraph NFA {\n");
     fprintf(out, "  rankdir=LR;\n");
-
+    fprintf(out, "  labelloc = \"t\";\n");
+    fprintf(out, "  label = \"");
+    fprint_str_escaped(out, inner->name, sizeof(inner->name));
+    fprintf(out, "\";\n");
     // 输出节点定义
     for (size_t i = 0; i < inner->node_count; i++) {
         struct NFA *nfa = inner->nodes[i];
