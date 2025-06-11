@@ -68,7 +68,7 @@ void dump_dot(Regex *re, FILE *out) {
     fprintf(out, "  rankdir=LR;\n");
     fprintf(out, "  labelloc = \"t\";\n");
     fprintf(out, "  label = \"");
-    fprint_str_escaped(out, inner->name, sizeof(inner->name));
+    fprint_str_escaped(out, inner->pattern, strlen(inner->pattern));
     fprintf(out, "\";\n");
     // 输出节点定义
     for (size_t i = 0; i < inner->node_count; i++) {
